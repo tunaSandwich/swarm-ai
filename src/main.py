@@ -1,14 +1,19 @@
 import time
 from .environment import Environment
 import matplotlib.pyplot as plt # Import for plot handling
+import pandas as pd # Import pandas for easier data handling
 
 # --- Simulation Parameters ---
 SIMULATION_AREA_SIZE = [100, 100] # Width, Height (e.g., meters)
 NUM_DRONES = 20
 COMM_RANGE = 25.0 # Communication range in meters
 INITIAL_ENERGY = 100.0
+# Energy Costs
+MOVE_ENERGY_COST_PER_UNIT = 0.5 # Energy cost per unit distance moved
+IDLE_ENERGY_COST_PER_SECOND = 0.1 # Energy cost per second while idle/active
+
 TIME_STEP = 0.1 # Simulation time step in seconds
-MAX_SIM_TIME = 10.0 # Maximum simulation time
+MAX_SIM_TIME = 50.0 # Increased simulation time to see energy effects
 RENDER_EVERY_STEP = True # Control rendering frequency
 
 # --- Main Simulation Logic ---
@@ -16,15 +21,18 @@ def run_simulation():
     """Initializes and runs the drone swarm simulation."""
     print("Starting Drone Swarm Simulation...")
 
-    # 1. Initialize the environment
+    # 1. Initialize the environment, passing energy costs
     env = Environment(size=SIMULATION_AREA_SIZE,
                       num_drones=NUM_DRONES,
                       comm_range=COMM_RANGE,
-                      initial_energy=INITIAL_ENERGY)
+                      initial_energy=INITIAL_ENERGY,
+                      move_energy_cost=MOVE_ENERGY_COST_PER_UNIT,
+                      idle_energy_cost=(IDLE_ENERGY_COST_PER_SECOND * TIME_STEP)) # Pass cost per step
 
     # Initial state rendering
     if RENDER_EVERY_STEP:
         env.render()
+        plt.pause(1) # Pause briefly to see initial state
 
     # List to store metrics from each step
     all_metrics = []
@@ -39,7 +47,7 @@ def run_simulation():
         all_metrics.append(metrics)
 
         # Render the current state
-        if RENDER_EVERY_STEP:
+        if RENDER_EVERY_STEP and step_count % 5 == 0: # Render every 5 steps to speed up slightly
              env.render()
 
         # Check termination conditions
@@ -56,17 +64,58 @@ def run_simulation():
     print(f"Total Simulation Time: {env.time:.2f} seconds")
     print(f"Total Real Time Elapsed: {end_real_time - start_real_time:.2f} seconds")
 
+    # Close the dynamic visualization properly BEFORE creating new plots
+    if RENDER_EVERY_STEP:
+        print("Closing dynamic visualization window...")
+        # Keep env.close_visualization() which calls plt.show() at the end
+        # plt.close(env.fig) # Don't close the figure window yet
+
     # 3. Post-Simulation Analysis / Visualization
     print(f"Collected {len(all_metrics)} metric snapshots.")
-    # Example: Print the last metrics
-    if all_metrics:
-        print("Final Metrics:", all_metrics[-1])
-    # TODO: Add plotting of metrics over time
+    if not all_metrics:
+        print("No metrics collected.")
+        return
 
-    # Close the visualization properly
+    # Convert metrics list to DataFrame for easier plotting
+    metrics_df = pd.DataFrame(all_metrics)
+    print("Final Metrics:", metrics_df.iloc[-1].to_dict() if not metrics_df.empty else "N/A")
+
+    # Create plots for key metrics
+    fig_metrics, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+
+    # Plot Average Energy
+    axs[0].plot(metrics_df['time'], metrics_df['average_energy'], label='Average Energy')
+    axs[0].set_ylabel('Energy')
+    axs[0].set_title('Average Drone Energy Over Time')
+    axs[0].grid(True)
+    axs[0].legend()
+
+    # Plot Connectivity Metric (e.g., Largest Component Size)
+    axs[1].plot(metrics_df['time'], metrics_df['largest_component_size'], label='Largest Component Size')
+    axs[1].set_ylabel('Number of Drones')
+    axs[1].set_title('Size of Largest Connected Component Over Time')
+    axs[1].grid(True)
+    axs[1].legend()
+
+    # Plot Number of Active Drones
+    axs[2].plot(metrics_df['time'], metrics_df['num_active_drones'], label='Active Drones')
+    axs[2].set_xlabel('Simulation Time (s)')
+    axs[2].set_ylabel('Number of Drones')
+    axs[2].set_title('Number of Active Drones Over Time')
+    axs[2].grid(True)
+    axs[2].legend()
+
+    plt.tight_layout()
+    # Instead of showing here, let env.close_visualization handle the final plt.show()
+    # plt.show()
+
+    # Ensure the main simulation plot stays open until closed by user
     if RENDER_EVERY_STEP:
-        print("Closing visualization window...")
-        env.close_visualization()
+        print("Displaying final simulation state and metrics plots...")
+        env.close_visualization() # This now calls plt.show() for all figures
+    else:
+         # If not rendering steps, show metrics plot now
+         plt.show()
 
 # --- Entry Point ---
 if __name__ == "__main__":

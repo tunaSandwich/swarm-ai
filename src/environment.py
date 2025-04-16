@@ -5,11 +5,13 @@ import matplotlib.pyplot as plt
 
 class Environment:
     """Manages the simulation space, drones, and connectivity."""
-    def __init__(self, size, num_drones, comm_range, initial_energy):
+    def __init__(self, size, num_drones, comm_range, initial_energy, move_energy_cost, idle_energy_cost):
         self.size = np.array(size)  # e.g., [width, height] or [width, height, depth]
         self.num_drones = num_drones
         self.comm_range = comm_range
         self.initial_energy = initial_energy
+        self.move_energy_cost = move_energy_cost
+        self.idle_energy_cost = idle_energy_cost
         self.drones = {}  # Dictionary to store drone objects {drone_id: Drone_instance}
         self.time = 0.0
         self.connectivity_graph = nx.Graph() # To represent drone links
@@ -30,7 +32,9 @@ class Environment:
             drone = Drone(drone_id=i,
                           initial_position=initial_pos,
                           initial_energy=self.initial_energy,
-                          comm_range=self.comm_range)
+                          comm_range=self.comm_range,
+                          move_energy_cost=self.move_energy_cost,
+                          idle_energy_cost=self.idle_energy_cost)
             self.drones[i] = drone
             self.connectivity_graph.add_node(i, pos=drone.position) # Add node to graph
 
@@ -81,22 +85,20 @@ class Environment:
         # 1. Get actions from AI/Control logic (placeholder)
         actions = self._get_actions()
 
-        # 2. Apply actions (move drones)
+        # 2. Apply actions (move drones) - Pass environment size
         for drone_id, action in actions.items():
             if drone_id in self.drones and self.drones[drone_id].state == "active":
                 velocity = action # Assuming action is directly a velocity vector for now
-                self.drones[drone_id].move(velocity, dt)
-                # TODO: Apply energy consumption
-                # self.drones[drone_id].energy -= calculate_energy_cost(velocity, dt)
+                self.drones[drone_id].move(velocity, dt, self.size)
 
-        # 3. Update drone states (e.g., check energy levels)
+        # 3. Update drone states (energy depletion, state changes)
         for drone in self.drones.values():
-            drone.update_state()
+            drone.update_state(dt)
 
-        # 4. Update connectivity based on new positions
+        # 4. Update connectivity based on new positions and states
         self._update_connectivity()
 
-        # 5. Calculate metrics (placeholder)
+        # 5. Calculate metrics
         metrics = self._calculate_metrics()
 
         # 6. Check termination conditions (placeholder)
@@ -122,18 +124,28 @@ class Environment:
         active_nodes = list(self.connectivity_graph.nodes())
         num_active_nodes = len(active_nodes)
 
+        # Calculate average energy of active drones
+        total_energy = 0
+        if num_active_nodes > 0:
+            total_energy = sum(self.drones[id].energy for id in active_nodes)
+            avg_energy = total_energy / num_active_nodes
+        else:
+            avg_energy = 0
+
         avg_degree = (2 * num_edges / num_active_nodes) if num_active_nodes > 0 else 0
         is_connected = False
         largest_cc_size = 0
         if num_active_nodes > 0:
-            # Ensure graph is not empty before checking connectivity
             is_connected = nx.is_connected(self.connectivity_graph)
-            if self.connectivity_graph:
-                 largest_cc = max(nx.connected_components(self.connectivity_graph), key=len, default=set())
-                 largest_cc_size = len(largest_cc)
+            if not self.connectivity_graph.nodes:
+                 largest_cc_size = 0
             else:
-                largest_cc_size = 0
-
+                 # Use try-except block as nx.connected_components might raise error on empty graph, though unlikely here
+                 try:
+                     largest_cc = max(nx.connected_components(self.connectivity_graph), key=len, default=set())
+                     largest_cc_size = len(largest_cc)
+                 except ValueError:
+                     largest_cc_size = 0 # Handle potential empty graph case
 
         metrics = {
             "time": self.time,
@@ -142,7 +154,7 @@ class Environment:
             "average_degree": avg_degree,
             "is_connected": is_connected,
             "largest_component_size": largest_cc_size,
-            # TODO: Add average energy metric
+            "average_energy": avg_energy # Add average energy to metrics
         }
         # print(f"Metrics: {metrics}") # Reduce print frequency
         return metrics
@@ -166,6 +178,10 @@ class Environment:
         # Get positions for drawing
         pos = nx.get_node_attributes(self.connectivity_graph, 'pos')
         if not pos: # Exit if no nodes to draw
+            # Need to handle the plot closing gracefully if it's empty early on
+            # self.ax.set_title(f"Drone Swarm Simulation - Time: {self.time:.2f}s - No Active Drones")
+            # plt.draw()
+            # plt.pause(0.01)
             return
 
         # Determine node colors based on state (optional)
@@ -188,7 +204,8 @@ class Environment:
 
         # Draw the network
         nx.draw_networkx_edges(self.connectivity_graph, pos, ax=self.ax, alpha=0.4, edge_color='gray')
-        nx.draw_networkx_nodes(self.connectivity_graph, pos, ax=self.ax, node_size=50, node_color=node_colors)
+        # Ensure we only try to draw nodes that actually exist in the graph
+        nx.draw_networkx_nodes(self.connectivity_graph, pos, ax=self.ax, nodelist=active_nodes_in_graph, node_size=50, node_color=node_colors)
         # nx.draw_networkx_labels(self.connectivity_graph, pos, ax=self.ax, font_size=8) # Optional: labels
 
         # Set plot limits and aspect ratio
@@ -197,7 +214,7 @@ class Environment:
         if len(self.size) == 3: # Basic handling for 3D Z-limit if needed
              self.ax.set_zlim(0, self.size[2])
         self.ax.set_aspect('equal', adjustable='box')
-        self.ax.set_title(f"Drone Swarm Simulation - Time: {self.time:.2f}s")
+        self.ax.set_title(f"Drone Swarm Simulation - Time: {self.time:.2f}s - Active: {len(active_nodes_in_graph)}")
         self.ax.set_xlabel("X position")
         self.ax.set_ylabel("Y position")
 
