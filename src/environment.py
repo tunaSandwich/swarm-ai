@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 
 class Environment:
     """Manages the simulation space, drones, and connectivity."""
-    def __init__(self, size, num_drones, comm_range, initial_energy, move_energy_cost, idle_energy_cost):
+    def __init__(self, size, num_drones, comm_range, initial_energy, move_energy_cost, idle_energy_cost, start_point, end_point, corridor_width):
         self.size = np.array(size)  # e.g., [width, height] or [width, height, depth]
         self.num_drones = num_drones
         self.comm_range = comm_range
@@ -15,6 +15,17 @@ class Environment:
         self.drones = {}  # Dictionary to store drone objects {drone_id: Drone_instance}
         self.time = 0.0
         self.connectivity_graph = nx.Graph() # To represent drone links
+
+        # Corridor parameters
+        self.start_point = np.array(start_point, dtype=float)
+        self.end_point = np.array(end_point, dtype=float)
+        self.corridor_width = float(corridor_width)
+        self.corridor_axis = self.end_point - self.start_point
+        self.corridor_length_sq = np.dot(self.corridor_axis, self.corridor_axis)
+        # Ensure corridor axis is not zero vector to avoid division by zero
+        if self.corridor_length_sq < 1e-9:
+             raise ValueError("Start and End points are too close.")
+        self.corridor_direction = self.corridor_axis / np.sqrt(self.corridor_length_sq)
 
         # --- Visualization Setup ---
         self.fig, self.ax = plt.subplots()
@@ -26,9 +37,20 @@ class Environment:
 
     def _initialize_drones(self):
         """Creates and places drones randomly within the environment bounds."""
+        print(f"Initializing {self.num_drones} drones near Start Point: {self.start_point}")
+        # Define a small area around the start point for initial placement
+        initial_spread = 5.0 # Drones will start within +/- 2.5 units of the start point
+
         for i in range(self.num_drones):
             # Random initial position within bounds
-            initial_pos = np.random.rand(len(self.size)) * self.size
+            # initial_pos = np.random.rand(len(self.size)) * self.size
+            # New: Place near start point with a small random offset
+            offset = (np.random.rand(len(self.size)) - 0.5) * initial_spread
+            initial_pos = self.start_point + offset
+            
+            # Ensure drones start within the overall simulation bounds
+            initial_pos = np.clip(initial_pos, 0, self.size)
+
             drone = Drone(drone_id=i,
                           initial_position=initial_pos,
                           initial_energy=self.initial_energy,
@@ -110,12 +132,87 @@ class Environment:
         """Placeholder for getting actions from the AI/control system."""
         # For now, let's make them move randomly slightly
         actions = {}
+        target_speed = 5.0 # Define a target speed for movement
+        separation_distance = 5.0 # Minimum desired distance between drones
+        separation_strength = 1.5 # How strongly drones push away from each other
+
+        # Get positions of all active drones for efficient neighbor checking
+        active_drones_pos = {id: d.position for id, d in self.drones.items() if d.state == 'active'}
+
         for drone_id, drone in self.drones.items():
             if drone.state == "active":
-                # Random velocity vector (scaled down)
-                # Make movement less erratic for visualization
-                random_velocity = (np.random.rand(len(self.size)) - 0.5) * 0.1 # Reduced magnitude
-                actions[drone_id] = random_velocity
+                # --- Corridor Following Logic ---
+                drone_vec = drone.position - self.start_point
+                
+                # Project drone position onto the corridor axis
+                projection_scalar = np.dot(drone_vec, self.corridor_axis) / self.corridor_length_sq
+                projection_scalar = np.clip(projection_scalar, 0, 1) # Clamp between start and end projection
+                
+                # Find the closest point on the centerline to the drone
+                closest_center_pt = self.start_point + projection_scalar * self.corridor_axis
+                
+                # Vector from centerline to drone (perpendicular component)
+                perp_vec = drone.position - closest_center_pt
+                dist_to_center = np.linalg.norm(perp_vec)
+
+                # --- Calculate Desired Velocity --- 
+                # 1. Force towards End Point (parallel to corridor axis)
+                velocity_parallel = self.corridor_direction * target_speed
+
+                # 2. Force towards Centerline (if outside half-width)
+                velocity_perpendicular = np.zeros_like(self.corridor_direction)
+                if dist_to_center > self.corridor_width / 2.0:
+                    # Direction towards center is -perp_vec
+                    # Scale force by how far outside it is
+                    correction_strength = 1.0 # Adjust strength as needed
+                    velocity_perpendicular = (-perp_vec / dist_to_center) * target_speed * correction_strength 
+                    # print(f"Drone {drone_id} correcting position. Dist: {dist_to_center:.2f}") # Debug
+                
+                # --- Separation Force --- 
+                velocity_separation = np.zeros_like(self.corridor_direction)
+                num_neighbors_too_close = 0
+                for neighbor_id, neighbor_pos in active_drones_pos.items():
+                    if drone_id == neighbor_id:
+                        continue # Don't compare drone to itself
+                    
+                    vec_to_neighbor = neighbor_pos - drone.position
+                    dist_sq = np.dot(vec_to_neighbor, vec_to_neighbor) # Use squared distance for efficiency
+
+                    if dist_sq < separation_distance**2 and dist_sq > 1e-6: # If neighbor is too close
+                        dist = np.sqrt(dist_sq)
+                        # Calculate force direction (away from neighbor)
+                        repulsion_direction = -vec_to_neighbor / dist
+                        # Scale force inversely with distance (stronger when closer)
+                        repulsion_force = repulsion_direction * (1.0 - dist / separation_distance) 
+                        velocity_separation += repulsion_force
+                        num_neighbors_too_close += 1
+                
+                # Average the separation force if multiple neighbors are close
+                # if num_neighbors_too_close > 0:
+                #     velocity_separation /= num_neighbors_too_close # Optional: Average vs Sum
+
+                # Scale separation force
+                velocity_separation *= target_speed * separation_strength
+
+                # 3. Combine forces (simple addition for now)
+                # Maybe add a small random component for exploration/jitter?
+                # random_jitter = (np.random.rand(len(self.size)) - 0.5) * 0.5
+                # Combine corridor guidance and separation
+                desired_velocity = velocity_parallel + velocity_perpendicular + velocity_separation # + random_jitter
+                
+                # Normalize final velocity to target speed (optional, prevents excessive speed)
+                current_speed = np.linalg.norm(desired_velocity)
+                if current_speed > target_speed:
+                   desired_velocity = (desired_velocity / current_speed) * target_speed
+                elif current_speed < 1e-6: # Avoid division by zero if velocity is near zero
+                     # If no other forces, add slight push towards end
+                     desired_velocity = self.corridor_direction * target_speed * 0.1 
+
+                actions[drone_id] = desired_velocity
+                # print(f"Drone {drone_id}: Vel Par={velocity_parallel}, Vel Perp={velocity_perpendicular}, Final={desired_velocity}") # Debug
+            else:
+                actions[drone_id] = np.zeros_like(self.start_point) # Inactive drones don't move
+
         return actions
 
     def _calculate_metrics(self):
@@ -126,11 +223,33 @@ class Environment:
 
         # Calculate average energy of active drones
         total_energy = 0
+        total_dist_from_center = 0
+        num_in_corridor = 0
+
         if num_active_nodes > 0:
-            total_energy = sum(self.drones[id].energy for id in active_nodes)
+            for id in active_nodes:
+                drone = self.drones[id]
+                total_energy += drone.energy
+
+                # Calculate distance from centerline
+                drone_vec = drone.position - self.start_point
+                projection_scalar = np.dot(drone_vec, self.corridor_axis) / self.corridor_length_sq
+                # We care about distance even if slightly outside the projected segment [0,1]
+                # projection_scalar = np.clip(projection_scalar, 0, 1)
+                closest_center_pt = self.start_point + projection_scalar * self.corridor_axis
+                dist_to_center = np.linalg.norm(drone.position - closest_center_pt)
+                
+                total_dist_from_center += dist_to_center
+                if dist_to_center <= self.corridor_width / 2.0:
+                    num_in_corridor += 1
+
             avg_energy = total_energy / num_active_nodes
+            avg_dist_from_center = total_dist_from_center / num_active_nodes
+            percent_in_corridor = (num_in_corridor / num_active_nodes) * 100.0
         else:
             avg_energy = 0
+            avg_dist_from_center = 0
+            percent_in_corridor = 0
 
         avg_degree = (2 * num_edges / num_active_nodes) if num_active_nodes > 0 else 0
         is_connected = False
@@ -154,7 +273,9 @@ class Environment:
             "average_degree": avg_degree,
             "is_connected": is_connected,
             "largest_component_size": largest_cc_size,
-            "average_energy": avg_energy # Add average energy to metrics
+            "average_energy": avg_energy, # Add average energy to metrics
+            "avg_dist_from_center": avg_dist_from_center,
+            "percent_in_corridor": percent_in_corridor
         }
         # print(f"Metrics: {metrics}") # Reduce print frequency
         return metrics
@@ -174,6 +295,27 @@ class Environment:
     def render(self):
         """Visualizes the current state of the simulation using Matplotlib."""
         self.ax.clear()
+
+        # --- Draw Corridor Boundaries --- 
+        # Calculate perpendicular vector to the corridor axis
+        perp_direction = np.array([-self.corridor_direction[1], self.corridor_direction[0]])
+        half_width_vec = perp_direction * (self.corridor_width / 2.0)
+        
+        # Points for the two boundary lines
+        line1_start = self.start_point + half_width_vec
+        line1_end = self.end_point + half_width_vec
+        line2_start = self.start_point - half_width_vec
+        line2_end = self.end_point - half_width_vec
+
+        # Draw the lines
+        self.ax.plot([line1_start[0], line1_end[0]], [line1_start[1], line1_end[1]], 'g--', alpha=0.5, label='Corridor Boundary')
+        self.ax.plot([line2_start[0], line2_end[0]], [line2_start[1], line2_end[1]], 'g--', alpha=0.5)
+        # --- End Corridor Drawing ---
+
+        # --- Draw Start/End Points --- 
+        self.ax.plot(self.start_point[0], self.start_point[1], 'go', markersize=10, label='Start')
+        self.ax.plot(self.end_point[0], self.end_point[1], 'ro', markersize=10, label='End')
+        # --- End Start/End Drawing ---
 
         # Get positions for drawing
         pos = nx.get_node_attributes(self.connectivity_graph, 'pos')
@@ -217,6 +359,7 @@ class Environment:
         self.ax.set_title(f"Drone Swarm Simulation - Time: {self.time:.2f}s - Active: {len(active_nodes_in_graph)}")
         self.ax.set_xlabel("X position")
         self.ax.set_ylabel("Y position")
+        self.ax.legend(loc='upper right') # Add legend for start/end/boundary
 
         # Redraw the canvas
         plt.draw()

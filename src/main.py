@@ -12,6 +12,11 @@ INITIAL_ENERGY = 100.0
 MOVE_ENERGY_COST_PER_UNIT = 0.5 # Energy cost per unit distance moved
 IDLE_ENERGY_COST_PER_SECOND = 0.1 # Energy cost per second while idle/active
 
+# --- Corridor Parameters ---
+START_POINT = [10.0, 50.0]
+END_POINT = [90.0, 50.0]
+CORRIDOR_WIDTH = 20.0 # Desired width of the drone corridor
+
 TIME_STEP = 0.1 # Simulation time step in seconds
 MAX_SIM_TIME = 50.0 # Increased simulation time to see energy effects
 RENDER_EVERY_STEP = True # Control rendering frequency
@@ -21,13 +26,16 @@ def run_simulation():
     """Initializes and runs the drone swarm simulation."""
     print("Starting Drone Swarm Simulation...")
 
-    # 1. Initialize the environment, passing energy costs
+    # 1. Initialize the environment, passing energy costs and corridor params
     env = Environment(size=SIMULATION_AREA_SIZE,
                       num_drones=NUM_DRONES,
                       comm_range=COMM_RANGE,
                       initial_energy=INITIAL_ENERGY,
                       move_energy_cost=MOVE_ENERGY_COST_PER_UNIT,
-                      idle_energy_cost=(IDLE_ENERGY_COST_PER_SECOND * TIME_STEP)) # Pass cost per step
+                      idle_energy_cost=(IDLE_ENERGY_COST_PER_SECOND * TIME_STEP), # Pass cost per step
+                      start_point=START_POINT,
+                      end_point=END_POINT,
+                      corridor_width=CORRIDOR_WIDTH)
 
     # Initial state rendering
     if RENDER_EVERY_STEP:
@@ -80,8 +88,8 @@ def run_simulation():
     metrics_df = pd.DataFrame(all_metrics)
     print("Final Metrics:", metrics_df.iloc[-1].to_dict() if not metrics_df.empty else "N/A")
 
-    # Create plots for key metrics
-    fig_metrics, axs = plt.subplots(3, 1, figsize=(10, 12), sharex=True)
+    # Create plots for key metrics - Increase grid size for new plots
+    fig_metrics, axs = plt.subplots(5, 1, figsize=(10, 18), sharex=True) # Increased rows from 3 to 5
 
     # Plot Average Energy
     axs[0].plot(metrics_df['time'], metrics_df['average_energy'], label='Average Energy')
@@ -104,6 +112,32 @@ def run_simulation():
     axs[2].set_title('Number of Active Drones Over Time')
     axs[2].grid(True)
     axs[2].legend()
+
+    # Plot Average Distance from Centerline (Placeholder data for now)
+    if 'avg_dist_from_center' in metrics_df.columns:
+        axs[3].plot(metrics_df['time'], metrics_df['avg_dist_from_center'], label='Avg. Dist. from Center')
+        axs[3].set_ylabel('Distance (m)')
+        axs[3].set_title('Average Drone Distance from Corridor Centerline')
+        axs[3].axhline(y=CORRIDOR_WIDTH / 2, color='r', linestyle='--', label='Corridor Edge')
+        axs[3].grid(True)
+        axs[3].legend()
+    else:
+        axs[3].set_title('Average Drone Distance from Corridor Centerline (Metric N/A)')
+        axs[3].grid(True)
+
+    # Plot Percentage of Drones in Corridor (Placeholder data for now)
+    if 'percent_in_corridor' in metrics_df.columns:
+        axs[4].plot(metrics_df['time'], metrics_df['percent_in_corridor'], label='% In Corridor')
+        axs[4].set_xlabel('Simulation Time (s)') # Add xlabel to the last plot
+        axs[4].set_ylabel('Percentage (%)')
+        axs[4].set_ylim(0, 105) # Set y-limit 0-100%
+        axs[4].set_title('Percentage of Active Drones within Corridor Width')
+        axs[4].grid(True)
+        axs[4].legend()
+    else:
+        axs[4].set_title('Percentage of Active Drones within Corridor Width (Metric N/A)')
+        axs[4].set_xlabel('Simulation Time (s)') # Add xlabel to the last plot
+        axs[4].grid(True)
 
     plt.tight_layout()
     # Instead of showing here, let env.close_visualization handle the final plt.show()
