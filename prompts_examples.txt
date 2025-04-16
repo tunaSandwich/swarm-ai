@@ -1,0 +1,36 @@
+1. Basic Simulation Structure:
+"Generate the basic Python class structure for the simulation environment and the Drone class, incorporating attributes defined in Simulation_Model.md."
+
+2. Implementing Core Mechanics:
+"Show Python code to update drone positions based on discrete actions (N/S/E/W/Stay) and handle boundary conditions ('Stop' method) as per Simulation_Model.md."
+"Provide a Python function update_links(drones) that uses NetworkX to return a graph of active links based on COMM_RANGE."
+"Add the energy update logic (idle and movement costs from Simulation_Model.md) into the drone's update step."
+
+3. Connectivity Metrics:
+"Show how to use NetworkX to calculate the size of the Largest Connected Component for the current drone link graph."
+"Provide the NetworkX/SciPy steps to calculate the Algebraic Connectivity (Fiedler Value) for the drone link graph."
+
+4. AI Algorithm - Reinforcement Learning:
+"Draft the state representation list for the Q-learning agent based on Positioning_Algorithms.md (use Option B with N=3 nearest neighbors)."
+"Suggest a Python function calculate_reward(drone, links) incorporating connectivity, simple spacing penalty, and movement cost as discussed in Positioning_Algorithms.md."
+"Give me the core Q-learning update rule implementation (Bellman equation) in Python."
+
+5. AI Algorithm - Particle Swarm Optimization:
+"Draft a Python fitness function calculate_fitness(drone, neighbors) for the PSO approach, prioritizing link count and ideal distance range as per Positioning_Algorithms.md."
+"Show the Python implementation of the PSO velocity and position update rules, referencing Positioning_Algorithms.md."
+
+6. Connecting AI to Simulation:
+"Explain how to translate the chosen action from the RL agent into a velocity or position change for the drone in the main simulation loop."
+"How should the fitness value from PSO influence the drone's pbest and lbest updates?"
+
+7. Visualization:
+"Provide a Pygame snippet to draw circles for drone positions and lines for active links based on a list of drones and a NetworkX graph."
+"Show how to use Matplotlib animation to visualize the drone movement and links over time."
+
+8. Debugging:
+"My simulation's connectivity isn't improving. Here's my [RL reward function / PSO fitness function] code: [Snippet]. Based on the goals in Project_Overview.md, what might be wrong?"
+"Drones are bunching up too much. Review my [Reward/Fitness function] focusing on spacing components defined in Positioning_Algorithms.md: [Snippet]."
+
+9. Analysis & Reporting:
+"Help outline the 'Methodology' section of the report, covering the simulation model and the [Specify: Q-learning or PSO] algorithm setup."
+"Based on this plot of [Metric, e.g., LCC Size] over time [Describe trend], what conclusions can I draw regarding the algorithm's effectiveness?"
