@@ -1,34 +1,38 @@
-# Project Overview: AI-Driven Connectivity Maintenance for Drone Swarm Simulation
+# Project Overview: AI-Driven Drone Corridor Formation Simulation
 
 ## Project Title
-AI-Driven Connectivity Maintenance for a Drone Swarm Simulation
+AI-Driven Drone Corridor Formation Simulation (or: Swarm Sim: Corridor Network)
 
 ## Goal
-To create a focused simulation demonstrating how a small swarm of drones (target: 15-30) can autonomously position themselves to maximize network connectivity **amongst themselves** using AI/ML techniques (specifically Reinforcement Learning or Swarm Intelligence approaches). This project serves as a targeted proof-of-concept related to broader challenges in drone mesh networking.
+To create a simulation demonstrating how a swarm of drones (target: 15-30+) can autonomously position themselves to form a **robust communication corridor** between a defined **Start Point** and **End Point**. The corridor aims to provide sufficient density and internal connectivity to support resilient data relay, reflecting needs for handling redirected internet data.
 
 ## Primary Objective
-Visually and statistically demonstrate the swarm's ability to dynamically adapt positions to establish and maintain communication links within the group. The simulation should show emergent self-organizing behavior, potentially reacting to challenges such as:
-*   Varying initial node densities or distributions.
-*   Simple energy depletion models affecting drone movement or availability.
-*   Simulated removal of individual nodes to test network resilience.
+Visually and statistically demonstrate the swarm's ability to self-organize into a "thick path" or corridor structure. The simulation should show drones:
+*   Aligning generally along the axis between the Start and End points.
+*   Maintaining a target **density** within a defined **corridor width**.
+*   Establishing and maintaining **redundant communication links** with multiple neighbors (ahead, behind, sideways) within the corridor.
+*   Dynamically adapting positions to maintain the corridor structure, potentially reacting to energy depletion or simulated node removal.
 
 ## Target Audience for Output
 *(**User Note:** Please replace the placeholder below with the specific person/role you aim to impress)*
 
-The primary audience for the final simulation and report is **[e.g., Lead Engineer, Dr. Smith / Hiring Manager at Company Y / Colleague working on Project X]**. The purpose is to showcase relevant technical skills (AI/ML, swarm behavior logic, simulation development, data analysis) and insightful thinking about autonomous network management, potentially highlighting suitability for opportunities related to their larger, more complex drone network project.
+The primary audience for the final simulation and report is for a technical potential business worker. The purpose is to showcase relevant technical skills (AI/ML for complex multi-agent coordination, swarm behavior, simulation development, data analysis) and insightful thinking about creating resilient, autonomous network structures.
 
 ## Deliverable
-1.  **Functional Simulation:** Executable code (likely Python) that runs the simulation. Should visually display drone positions and active communication links in real-time or step-by-step.
-2.  **Results Visualization:** Graphs generated from simulation runs, showing key metrics over time (e.g., chosen connectivity metric, average drone energy, number of active links).
+1.  **Functional Simulation:** Executable code (Python) running the simulation. Should visually display drone positions, active links, and the emergent corridor structure.
+2.  **Results Visualization:** Graphs and potentially animations/screenshots showing:
+    *   The swarm forming and maintaining the corridor.
+    *   Metrics over time (e.g., average drone distance from the Start-End centerline, average local density within the corridor, path continuity metrics).
+    *   Energy usage patterns.
 3.  **Concise Report:** A short document (~3-5 pages) summarizing:
-    *   Project Goal & Scope
-    *   Methodology (AI algorithm choice, state/action/reward or fitness function, simulation model details)
-    *   Simulation Setup & Parameters
-    *   Results (including visualizations)
-    *   Discussion (insights, limitations, potential next steps)
-    *   Conclusion
+    *   Project Goal (corridor formation) & Scope.
+    *   Methodology (AI algorithm choice tailored for corridor formation, simulation model, corridor parameters like width/density targets).
+    *   Simulation Setup & Parameters.
+    *   Results (visual and quantitative evidence of corridor formation and its properties).
+    *   Discussion (insights, challenges of corridor formation, limitations, potential next steps).
+    *   Conclusion.
 
 ## Technology Focus
 *   **Core Development:** Simulation environment built primarily in Python.
-*   **Libraries:** Utilizing libraries such as NumPy (for numerical operations), NetworkX (for graph analysis/connectivity metrics), and potentially Pygame or Matplotlib (for visualization).
-*   **AI/ML:** Implementation and tuning of the chosen AI/ML algorithm (e.g., Q-learning, DQN, PSO adaptation) for decentralized drone control.
+*   **Libraries:** Utilizing libraries such as NumPy, NetworkX (for connectivity analysis within the corridor), Matplotlib/Pygame (for visualization), and potentially AI/ML libraries if needed beyond custom implementation.
+*   **AI/ML:** Implementation and tuning of AI/ML algorithms (e.g., RL or SI) specifically designed to achieve the collective corridor formation behavior based on local interactions.

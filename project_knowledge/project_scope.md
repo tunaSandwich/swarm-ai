@@ -1,70 +1,76 @@
-# Project Scope: AI-Driven Connectivity Maintenance Simulation
+# Project Scope: AI-Driven Drone Corridor Formation Simulation
 
-This document defines the specific boundaries for the "AI-Driven Connectivity Maintenance for a Drone Swarm Simulation" project. Its purpose is to ensure the project remains focused and achievable within the context of creating a compelling proof-of-concept.
+This document defines the specific boundaries for the "AI-Driven Drone Corridor Formation Simulation" project. Its purpose is to ensure the project remains focused on demonstrating the autonomous formation of a robust communication corridor between a Start and End point.
 
 ## IN SCOPE
 
 The following elements are considered **within** the scope of this project:
 
-1.  **Simulation Environment:**
-    *   Development of a simulation environment, likely in Python.
-    *   Representation of a 2D or simple 3D bounded space.
+1.  **Simulation Environment & Core:**
+    *   Leveraging the existing Python-based simulation framework (`Drone`, `Environment` classes).
+    *   Simulation within a 2D bounded area (`SIMULATION_AREA_SIZE`).
+    *   Managing a swarm of `NUM_DRONES` (target range: 15-30+).
+    *   Utilizing NumPy for position/vector calculations.
 
-2.  **Drone Swarm:**
-    *   Simulation of a **small** number of drones (target range: 15-30 agents).
-    *   Modeling basic drone movement capabilities (e.g., discrete steps, simple velocity updates).
-    *   Each drone represented by its position and internal state (e.g., energy level).
+2.  **Path Definition:**
+    *   Defining fixed **Start Point** and **End Point** coordinates within the simulation area.
+    *   Defining target parameters for the communication corridor, such as:
+        *   `CORRIDOR_WIDTH`: The desired lateral width of the drone band relative to the direct Start-End line.
+        *   `TARGET_DENSITY` or `TARGET_SPACING`: A goal for how closely packed drones should be within the corridor.
 
-3.  **AI/ML for Positioning:**
-    *   Implementation and testing of **one or two** specific AI/ML algorithms focused on autonomous positioning. Candidates include:
-        *   Reinforcement Learning (RL), likely using independent learners (e.g., Q-learning, potentially simple DQN per agent). Focus on defining appropriate state, action, and reward structures.
-        *   Swarm Intelligence (SI), such as an adaptation of Particle Swarm Optimization (PSO). Focus on defining the fitness function and update rules.
-    *   The primary goal of the AI is to maximize/maintain network connectivity within the swarm.
+3.  **AI/ML for Corridor Formation:**
+    *   Implementation and testing of **one or two** specific AI/ML algorithms (e.g., RL or SI) adapted for **collective corridor formation**.
+    *   The AI's primary goal is to guide drones to positions that:
+        *   Lie within the defined `CORRIDOR_WIDTH`.
+        *   Contribute to achieving the `TARGET_DENSITY`.
+        *   Maintain connectivity primarily with neighbors *along the corridor's direction* (towards Start/End) and *sideways within the corridor*.
+        *   Implicitly promote progress from Start towards End.
 
 4.  **Network & Communication Model:**
-    *   Modeling network links based on a **simple proximity threshold:** A communication link exists between two drones if their distance is less than a predefined `COMM_RANGE`.
-    *   Focus on **link existence/topology**, not data transmission simulation.
-    *   Calculating and tracking network connectivity metrics (e.g., number of links, average node degree, potentially size of the largest connected component, or exploring algebraic connectivity if time permits).
+    *   Using NetworkX to model connectivity based on `COMM_RANGE`, as already implemented.
+    *   Focusing analysis on connectivity *within* the formed corridor structure.
+    *   Calculating metrics relevant to corridor quality (see Metrics section).
 
 5.  **Energy Model:**
-    *   Implementation of a **simple energy consumption model:**
-        *   Drones start with a maximum energy level.
-        *   Energy depletes over time (idle cost).
-        *   Energy depletes faster when moving (movement cost).
-    *   Potentially using energy level as input for AI decisions or triggering node removal/state change at low energy thresholds.
+    *   Incorporating the existing energy model (`INITIAL_ENERGY`, `idle_energy_cost`, `move_energy_cost`).
+    *   Potentially using energy level as input for AI decisions or triggering node state changes ('inactive').
 
-6.  **Visualization & Reporting:**
-    *   Visualizing the simulation state: drone positions and active communication links.
-    *   Generating plots showing key metrics (connectivity, energy) over simulation time.
-    *   Writing a concise final report (~3-5 pages) summarizing the project, methodology, results, and discussion.
+6.  **Metrics & Analysis:**
+    *   Calculating and tracking metrics specifically related to corridor formation and quality, such as:
+        *   Average drone distance from the ideal Start-End centerline.
+        *   Average local density within the corridor.
+        *   Path continuity metrics (e.g., existence of *a* path, perhaps number of hops on the shortest path within the corridor).
+        *   Number of active drones / average energy (as already implemented).
+    *   Using Pandas DataFrames to store metrics over time (as already implemented).
+
+7.  **Visualization & Reporting:**
+    *   Using Matplotlib to visualize drone positions, links, and the emergent corridor structure (extending existing `render` method).
+    *   Generating plots summarizing corridor-relevant metrics over time (using Matplotlib/Pandas).
+    *   Writing a concise final report (~3-5 pages) explaining the corridor formation approach and results.
 
 ## OUT OF SCOPE
 
 The following elements are explicitly **outside** the scope of this project:
 
-1.  **Data Traffic Simulation:**
-    *   Simulating the transmission of actual data packets (no bandwidth, latency, throughput, packet loss, or QoS modeling).
-    *   Ignoring specific data types (internet traffic, military, financial).
+1.  **Specific Data Simulation:**
+    *   Simulating actual internet data packets, bandwidth, latency, throughput, QoS. The focus is on forming the *structure* for potential relay.
 
-2.  **Network Protocol Implementation:**
-    *   Implementing specific MAC layer protocols (e.g., CSMA/CA) or Network layer routing protocols (e.g., AODV, OLSR, DSR). Routing is implicitly handled by the AI positioning for direct communication within range.
+2.  **Advanced Network Protocols:**
+    *   Implementing specific MAC or complex Network layer routing protocols beyond the connectivity graph. Routing is implicit via proximity within the corridor.
 
-3.  **Heterogeneous Networks & Backhaul:**
-    *   Simulating larger "gateway" or "backhaul" drones.
-    *   Modeling connection to the wider internet or ground stations.
-    *   Inter-tier communication protocols.
+3.  **General Mesh Optimization:**
+    *   Maximizing overall mesh connectivity across the *entire* simulation area (the goal is corridor-specific).
 
 4.  **Advanced Physics & Environment:**
-    *   Detailed or realistic physics simulation (e.g., aerodynamics, wind effects, complex collision physics beyond simple overlap avoidance if needed).
-    *   Modeling complex or variable outdoor terrain.
+    *   Complex physics (aerodynamics, wind).
+    *   Variable terrain or obstacle avoidance (assuming an open 2D plane).
 
-5.  **Hardware & SWaP:**
-    *   Detailed modeling of Size, Weight, and Power (SWaP) constraints beyond the simplified communication range and energy model.
-    *   Consideration of specific hardware components (sensors, radios, processors).
-    *   Any aspect of physical hardware implementation or deployment.
+5.  **Hardware Implementation:**
+    *   SWaP constraints beyond the existing energy model and `COMM_RANGE`.
+    *   Any physical hardware deployment considerations.
 
-6.  **Security:**
-    *   Implementing or analyzing network security features (encryption, authentication, intrusion detection, jamming resistance).
+6.  **Advanced Security Aspects:**
+    *   Encryption, authentication, intrusion detection, etc.
 
-7.  **Scale:**
-    *   Simulation of large-scale swarms (hundreds or thousands of drones). The focus is on demonstrating the core AI logic works for a small group.
+7.  **Explicit Chain Management:**
+    *   Designing AI to manage distinct, numbered parallel chains. The goal is an emergent dense corridor, not explicit chain assignment.
