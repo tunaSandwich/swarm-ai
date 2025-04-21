@@ -3,6 +3,10 @@ import networkx as nx
 from .drone import Drone  # Assuming drone.py is in the same directory
 import matplotlib.pyplot as plt
 
+# Define constants for special nodes
+START_NODE_ID = 'start_node'
+END_NODE_ID = 'end_node'
+
 class Environment:
     """Manages the simulation space, drones, and connectivity."""
     def __init__(self, size, num_drones, comm_range, initial_energy, move_energy_cost, idle_energy_cost, start_point, end_point, corridor_width):
@@ -26,6 +30,10 @@ class Environment:
         if self.corridor_length_sq < 1e-9:
              raise ValueError("Start and End points are too close.")
         self.corridor_direction = self.corridor_axis / np.sqrt(self.corridor_length_sq)
+
+        # Add start/end points as nodes to the graph
+        self.connectivity_graph.add_node(START_NODE_ID, pos=self.start_point, type='anchor')
+        self.connectivity_graph.add_node(END_NODE_ID, pos=self.end_point, type='anchor')
 
         # --- Visualization Setup ---
         self.fig, self.ax = plt.subplots()
@@ -58,44 +66,66 @@ class Environment:
                           move_energy_cost=self.move_energy_cost,
                           idle_energy_cost=self.idle_energy_cost)
             self.drones[i] = drone
-            self.connectivity_graph.add_node(i, pos=drone.position) # Add node to graph
+            # Add drone node, connecting it to start/end if initially in range
+            self.connectivity_graph.add_node(i, pos=drone.position, type='drone')
+            # Don't add drone-to-anchor edges here, _update_connectivity handles it
 
         print(f"Environment initialized with {self.num_drones} drones.")
+        self._update_connectivity() # Initial connectivity calculation
 
     def _update_connectivity(self):
-        """Updates the connectivity graph based on current drone positions."""
-        # Keep track of nodes that should exist (active drones)
+        """Updates the connectivity graph based on current drone positions and anchors."""
+        # Keep track of nodes that should exist (active drones + anchors)
         active_drone_ids = {id for id, drone in self.drones.items() if drone.state == "active"}
+        current_node_ids = set(active_drone_ids)
+        current_node_ids.add(START_NODE_ID) # Ensure anchors are always considered
+        current_node_ids.add(END_NODE_ID)
 
         # Remove nodes from graph if drone is no longer active
-        nodes_to_remove = [node for node in self.connectivity_graph.nodes() if node not in active_drone_ids]
+        # Anchors (start/end) should never be removed unless logic changes
+        nodes_to_remove = [node for node in self.connectivity_graph.nodes() if node not in current_node_ids]
         self.connectivity_graph.remove_nodes_from(nodes_to_remove)
 
-        # Add nodes if any drone became active again (less likely but possible)
+        # Add nodes if any drone became active again or if anchors were somehow removed
         for drone_id in active_drone_ids:
             if drone_id not in self.connectivity_graph:
-                self.connectivity_graph.add_node(drone_id, pos=self.drones[drone_id].position)
+                self.connectivity_graph.add_node(drone_id, pos=self.drones[drone_id].position, type='drone')
+        if START_NODE_ID not in self.connectivity_graph:
+             self.connectivity_graph.add_node(START_NODE_ID, pos=self.start_point, type='anchor')
+        if END_NODE_ID not in self.connectivity_graph:
+             self.connectivity_graph.add_node(END_NODE_ID, pos=self.end_point, type='anchor')
 
-        # Update positions and edges for active drones
+        # Update positions and edges for active drones and anchors
         self.connectivity_graph.clear_edges()
-        active_nodes = list(self.connectivity_graph.nodes())
-        for i in range(len(active_nodes)):
-            d1_id = active_nodes[i]
-            d1 = self.drones[d1_id]
-            # Update position attribute for visualization
-            self.connectivity_graph.nodes[d1_id]['pos'] = d1.position
+        # active_nodes = list(self.connectivity_graph.nodes()) # Now includes anchors
 
-            for j in range(i + 1, len(active_nodes)):
-                d2_id = active_nodes[j]
+        # Update drone positions in the graph
+        for drone_id in active_drone_ids:
+            drone = self.drones[drone_id]
+            self.connectivity_graph.nodes[drone_id]['pos'] = drone.position
+
+        # Calculate drone-to-drone connectivity
+        active_drone_list = list(active_drone_ids)
+        for i in range(len(active_drone_list)):
+            d1_id = active_drone_list[i]
+            d1 = self.drones[d1_id]
+            for j in range(i + 1, len(active_drone_list)):
+                d2_id = active_drone_list[j]
                 d2 = self.drones[d2_id]
                 distance = np.linalg.norm(d1.position - d2.position)
                 if distance <= self.comm_range:
                     self.connectivity_graph.add_edge(d1_id, d2_id, weight=distance)
 
-        # Update node positions in the graph for visualization
-        # for drone_id, drone in self.drones.items():
-        #     if drone_id in self.connectivity_graph:
-        #          self.connectivity_graph.nodes[drone_id]['pos'] = drone.position
+        # Calculate drone-to-anchor connectivity
+        for drone_id in active_drone_ids:
+            drone = self.drones[drone_id]
+            dist_to_start = np.linalg.norm(drone.position - self.start_point)
+            dist_to_end = np.linalg.norm(drone.position - self.end_point)
+
+            if dist_to_start <= self.comm_range:
+                self.connectivity_graph.add_edge(drone_id, START_NODE_ID, weight=dist_to_start)
+            if dist_to_end <= self.comm_range:
+                self.connectivity_graph.add_edge(drone_id, END_NODE_ID, weight=dist_to_end)
 
         # print(f"Time {self.time:.2f}: Connectivity updated. Edges: {self.connectivity_graph.number_of_edges()}")
 
@@ -129,151 +159,226 @@ class Environment:
         return metrics, done
 
     def _get_actions(self):
-        """Placeholder for getting actions from the AI/control system."""
-        # For now, let's make them move randomly slightly
+        """Calculates drone actions (velocity) using Boids/Flocking rules for corridor formation."""
         actions = {}
-        target_speed = 5.0 # Define a target speed for movement
-        separation_distance = 5.0 # Minimum desired distance between drones
-        separation_strength = 1.5 # How strongly drones push away from each other
 
-        # Get positions of all active drones for efficient neighbor checking
-        active_drones_pos = {id: d.position for id, d in self.drones.items() if d.state == 'active'}
+        # --- Boids Parameters ---
+        MAX_SPEED = 5.0           # Max speed a drone can travel per second
+        SEPARATION_DISTANCE = 10.0  # Minimum desired distance between drones
+        # Ensure SEPARATION_DISTANCE < self.comm_range
+        if SEPARATION_DISTANCE >= self.comm_range:
+             print(f"Warning: SEPARATION_DISTANCE ({SEPARATION_DISTANCE}) should be less than COMM_RANGE ({self.comm_range})")
+             # Adjust if necessary, ensure it's significantly smaller than comm_range
+             SEPARATION_DISTANCE = self.comm_range * 0.5 
+             print(f"Adjusted SEPARATION_DISTANCE to {SEPARATION_DISTANCE}")
 
+
+        # Weights for steering behaviors (PLACEHOLDERS - need tuning)
+        WEIGHT_SEPARATION = 1.5  # Slightly reduced
+        WEIGHT_COHESION = 0.2    # Significantly reduced
+        WEIGHT_CORRIDOR = 1.2    # Kept same
+        WEIGHT_ALIGNMENT = 1.5   # Increased
+        # --- End Boids Parameters ---
+
+        active_drones = {id: d for id, d in self.drones.items() if d.state == 'active'}
+        active_drone_ids = list(active_drones.keys())
+        num_active = len(active_drone_ids)
+
+        if num_active == 0:
+            return actions # No active drones
+
+        # Pre-calculate positions for efficiency
+        positions = {id: d.position for id, d in active_drones.items()}
+
+        for drone_id in active_drone_ids:
+            current_drone = active_drones[drone_id]
+            pos = positions[drone_id]
+
+            separation_vector = np.zeros_like(pos)
+            cohesion_vector = np.zeros_like(pos)
+            corridor_vector = np.zeros_like(pos)
+            alignment_vector = np.zeros_like(pos) # NEW: Initialize alignment vector
+            
+            neighbor_positions_for_cohesion = []
+            num_separation_neighbors = 0
+
+            # --- Calculate Steering Vectors ---
+            for other_id in active_drone_ids:
+                if drone_id == other_id:
+                    continue
+
+                other_pos = positions[other_id]
+                vec_to_other = other_pos - pos
+                dist_sq = np.dot(vec_to_other, vec_to_other)
+                dist = np.sqrt(dist_sq) if dist_sq > 1e-9 else 0 # Avoid sqrt(0)
+
+                # 1. Separation
+                if dist > 1e-9 and dist < SEPARATION_DISTANCE:
+                    # Force is stronger when closer, pointing away from the neighbor
+                    separation_vector -= (vec_to_other / dist) * (1.0 - dist / SEPARATION_DISTANCE)
+                    num_separation_neighbors += 1
+
+                # 2. Cohesion (Neighbors within comm_range but outside separation distance)
+                elif dist > 1e-9 and dist < self.comm_range:
+                     neighbor_positions_for_cohesion.append(other_pos)
+
+            # Average Separation Vector (Optional: can prevent extreme forces in dense clusters)
+            # if num_separation_neighbors > 0:
+            #     separation_vector /= num_separation_neighbors
+
+
+            # 2. Cohesion Calculation (if neighbors exist)
+            if neighbor_positions_for_cohesion:
+                center_of_mass = np.mean(neighbor_positions_for_cohesion, axis=0)
+                vec_to_center = center_of_mass - pos
+                # Steer towards the center of mass - scale by distance? Or keep simple?
+                # For now, use the raw vector towards the center. Normalizing might be needed during tuning.
+                cohesion_vector = vec_to_center
+                # Optional: Cap cohesion force magnitude if needed
+
+
+            # 3. Corridor Following
+            # Vector from the start point of the corridor line to the drone
+            drone_vec_from_start = pos - self.start_point
+            # Project this vector onto the corridor axis vector to find the projection length
+            # Note: self.corridor_axis is end_point - start_point
+            # Note: self.corridor_length_sq is dot(self.corridor_axis, self.corridor_axis)
+            projection_scalar_ratio = np.dot(drone_vec_from_start, self.corridor_axis) / self.corridor_length_sq
+            
+            # Find the closest point ON THE INFINITE LINE defined by start/end
+            closest_center_pt_on_line = self.start_point + projection_scalar_ratio * self.corridor_axis
+            
+            # Vector from the closest point on the line to the drone
+            perp_vec_to_drone = pos - closest_center_pt_on_line
+            dist_to_centerline = np.linalg.norm(perp_vec_to_drone)
+
+            # Apply force only if outside the desired corridor width
+            if dist_to_centerline > self.corridor_width / 2.0:
+                # Vector pointing back towards the centerline (opposite of perp_vec_to_drone)
+                # Normalize to get direction only
+                direction_to_center = -perp_vec_to_drone / dist_to_centerline
+                
+                # Scale force maybe? For now, use constant magnitude push towards line.
+                # magnitude = (dist_to_centerline - self.corridor_width / 2.0) # Linear scaling factor
+                magnitude = 1.0 # Constant force magnitude
+                corridor_vector = direction_to_center * magnitude
+
+            # 4. Alignment / Forward Thrust (NEW)
+            # Simplest form: always try to move along the corridor direction
+            alignment_vector = self.corridor_direction
+
+
+            # --- Combine Steering Vectors ---
+            # Weight the vectors - Tuning these weights is crucial!
+            desired_velocity = (separation_vector * WEIGHT_SEPARATION +
+                                cohesion_vector * WEIGHT_COHESION +
+                                corridor_vector * WEIGHT_CORRIDOR +
+                                alignment_vector * WEIGHT_ALIGNMENT) # Add alignment
+
+
+            # --- Normalize and Cap Speed ---
+            speed = np.linalg.norm(desired_velocity)
+            if speed > MAX_SPEED:
+                desired_velocity = (desired_velocity / speed) * MAX_SPEED
+            elif speed < 1e-6: # Handle potential zero vector if no forces act on drone
+                # Default behavior: maybe a tiny random nudge or push towards end?
+                # Or just stay put if truly balanced. Let's default to zero for now.
+                desired_velocity = np.zeros_like(pos)
+                # Alternative: Add a small default forward thrust along corridor direction
+                # desired_velocity = self.corridor_direction * MAX_SPEED * 0.1
+
+            actions[drone_id] = desired_velocity
+
+        # Assign zero velocity to inactive drones explicitly
         for drone_id, drone in self.drones.items():
-            if drone.state == "active":
-                # --- Corridor Following Logic ---
-                drone_vec = drone.position - self.start_point
-                
-                # Project drone position onto the corridor axis
-                projection_scalar = np.dot(drone_vec, self.corridor_axis) / self.corridor_length_sq
-                projection_scalar = np.clip(projection_scalar, 0, 1) # Clamp between start and end projection
-                
-                # Find the closest point on the centerline to the drone
-                closest_center_pt = self.start_point + projection_scalar * self.corridor_axis
-                
-                # Vector from centerline to drone (perpendicular component)
-                perp_vec = drone.position - closest_center_pt
-                dist_to_center = np.linalg.norm(perp_vec)
-
-                # --- Calculate Desired Velocity --- 
-                # 1. Force towards End Point (parallel to corridor axis)
-                velocity_parallel = self.corridor_direction * target_speed
-
-                # 2. Force towards Centerline (if outside half-width)
-                velocity_perpendicular = np.zeros_like(self.corridor_direction)
-                if dist_to_center > self.corridor_width / 2.0:
-                    # Direction towards center is -perp_vec
-                    # Scale force by how far outside it is
-                    correction_strength = 1.0 # Adjust strength as needed
-                    velocity_perpendicular = (-perp_vec / dist_to_center) * target_speed * correction_strength 
-                    # print(f"Drone {drone_id} correcting position. Dist: {dist_to_center:.2f}") # Debug
-                
-                # --- Separation Force --- 
-                velocity_separation = np.zeros_like(self.corridor_direction)
-                num_neighbors_too_close = 0
-                for neighbor_id, neighbor_pos in active_drones_pos.items():
-                    if drone_id == neighbor_id:
-                        continue # Don't compare drone to itself
-                    
-                    vec_to_neighbor = neighbor_pos - drone.position
-                    dist_sq = np.dot(vec_to_neighbor, vec_to_neighbor) # Use squared distance for efficiency
-
-                    if dist_sq < separation_distance**2 and dist_sq > 1e-6: # If neighbor is too close
-                        dist = np.sqrt(dist_sq)
-                        # Calculate force direction (away from neighbor)
-                        repulsion_direction = -vec_to_neighbor / dist
-                        # Scale force inversely with distance (stronger when closer)
-                        repulsion_force = repulsion_direction * (1.0 - dist / separation_distance) 
-                        velocity_separation += repulsion_force
-                        num_neighbors_too_close += 1
-                
-                # Average the separation force if multiple neighbors are close
-                # if num_neighbors_too_close > 0:
-                #     velocity_separation /= num_neighbors_too_close # Optional: Average vs Sum
-
-                # Scale separation force
-                velocity_separation *= target_speed * separation_strength
-
-                # 3. Combine forces (simple addition for now)
-                # Maybe add a small random component for exploration/jitter?
-                # random_jitter = (np.random.rand(len(self.size)) - 0.5) * 0.5
-                # Combine corridor guidance and separation
-                desired_velocity = velocity_parallel + velocity_perpendicular + velocity_separation # + random_jitter
-                
-                # Normalize final velocity to target speed (optional, prevents excessive speed)
-                current_speed = np.linalg.norm(desired_velocity)
-                if current_speed > target_speed:
-                   desired_velocity = (desired_velocity / current_speed) * target_speed
-                elif current_speed < 1e-6: # Avoid division by zero if velocity is near zero
-                     # If no other forces, add slight push towards end
-                     desired_velocity = self.corridor_direction * target_speed * 0.1 
-
-                actions[drone_id] = desired_velocity
-                # print(f"Drone {drone_id}: Vel Par={velocity_parallel}, Vel Perp={velocity_perpendicular}, Final={desired_velocity}") # Debug
-            else:
-                actions[drone_id] = np.zeros_like(self.start_point) # Inactive drones don't move
+            if drone.state != 'active':
+                 # Ensure inactive drones have a zero velocity action
+                 actions[drone_id] = np.zeros_like(drone.position) 
 
         return actions
 
     def _calculate_metrics(self):
         """Calculates and returns relevant simulation metrics."""
         num_edges = self.connectivity_graph.number_of_edges()
-        active_nodes = list(self.connectivity_graph.nodes())
-        num_active_nodes = len(active_nodes)
+        # Get all nodes currently in the graph (includes drones and anchors)
+        all_graph_nodes = list(self.connectivity_graph.nodes())
+        # Get only the active drone nodes *currently* in the graph
+        active_drone_nodes_in_graph = [nid for nid, data in self.connectivity_graph.nodes(data=True) if data.get('type') == 'drone']
+        num_active_drones = len(active_drone_nodes_in_graph)
 
-        # Calculate average energy of active drones
+        # Calculate average energy and corridor metrics for *active drones*
         total_energy = 0
         total_dist_from_center = 0
         num_in_corridor = 0
 
-        if num_active_nodes > 0:
-            for id in active_nodes:
-                drone = self.drones[id]
-                total_energy += drone.energy
+        # Iterate only over active drone nodes
+        if num_active_drones > 0:
+            for drone_id in active_drone_nodes_in_graph:
+                # Ensure drone_id is still valid (should be, but safe check)
+                if drone_id in self.drones:
+                    drone = self.drones[drone_id]
+                    total_energy += drone.energy
 
-                # Calculate distance from centerline
-                drone_vec = drone.position - self.start_point
-                projection_scalar = np.dot(drone_vec, self.corridor_axis) / self.corridor_length_sq
-                # We care about distance even if slightly outside the projected segment [0,1]
-                # projection_scalar = np.clip(projection_scalar, 0, 1)
-                closest_center_pt = self.start_point + projection_scalar * self.corridor_axis
-                dist_to_center = np.linalg.norm(drone.position - closest_center_pt)
-                
-                total_dist_from_center += dist_to_center
-                if dist_to_center <= self.corridor_width / 2.0:
-                    num_in_corridor += 1
+                    # Calculate distance from centerline
+                    drone_vec = drone.position - self.start_point
+                    # Use projection formula, avoid division by zero if corridor length is somehow zero
+                    projection_scalar = 0.0
+                    if self.corridor_length_sq > 1e-9:
+                         projection_scalar = np.dot(drone_vec, self.corridor_axis) / self.corridor_length_sq
+                    # We care about distance even if slightly outside the projected segment [0,1] for containment check
+                    # projection_scalar = np.clip(projection_scalar, 0, 1)
+                    closest_center_pt = self.start_point + projection_scalar * self.corridor_axis
+                    dist_to_center = np.linalg.norm(drone.position - closest_center_pt)
 
-            avg_energy = total_energy / num_active_nodes
-            avg_dist_from_center = total_dist_from_center / num_active_nodes
-            percent_in_corridor = (num_in_corridor / num_active_nodes) * 100.0
+                    total_dist_from_center += dist_to_center
+                    if dist_to_center <= self.corridor_width / 2.0:
+                        num_in_corridor += 1
+                else:
+                    # This case should ideally not happen if graph/drone dict are synced
+                    print(f"Warning: Drone ID {drone_id} found in graph but not in self.drones during metric calculation.")
+
+            avg_energy = total_energy / num_active_drones
+            avg_dist_from_center = total_dist_from_center / num_active_drones
+            percent_in_corridor = (num_in_corridor / num_active_drones) * 100.0
         else:
             avg_energy = 0
             avg_dist_from_center = 0
             percent_in_corridor = 0
 
-        avg_degree = (2 * num_edges / num_active_nodes) if num_active_nodes > 0 else 0
-        is_connected = False
-        largest_cc_size = 0
-        if num_active_nodes > 0:
-            is_connected = nx.is_connected(self.connectivity_graph)
-            if not self.connectivity_graph.nodes:
-                 largest_cc_size = 0
-            else:
-                 # Use try-except block as nx.connected_components might raise error on empty graph, though unlikely here
-                 try:
-                     largest_cc = max(nx.connected_components(self.connectivity_graph), key=len, default=set())
-                     largest_cc_size = len(largest_cc)
-                 except ValueError:
-                     largest_cc_size = 0 # Handle potential empty graph case
+        # Calculate overall graph metrics (including anchors)
+        # avg_degree = (2 * num_edges / len(all_graph_nodes)) if len(all_graph_nodes) > 0 else 0
+        # is_connected = False
+        # if len(all_graph_nodes) > 0:
+        #     is_connected = nx.is_connected(self.connectivity_graph)
+            # Consider if 'is_connected' should refer to the whole graph or just drones
+
+        # --- Connectivity Metrics (focused on Drones) ---
+        drone_subgraph = self.connectivity_graph.subgraph(active_drone_nodes_in_graph)
+
+        if drone_subgraph.number_of_nodes() > 0:
+            # Is the drone subgraph connected?
+            is_drone_swarm_connected = nx.is_connected(drone_subgraph)
+            # Largest component size among *drones* only
+            largest_component_nodes = max(nx.connected_components(drone_subgraph), key=len)
+            largest_component_size = len(largest_component_nodes)
+            num_components = nx.number_connected_components(drone_subgraph)
+            avg_drone_degree = (2 * drone_subgraph.number_of_edges() / drone_subgraph.number_of_nodes())
+        else:
+            is_drone_swarm_connected = False # No drones -> not connected
+            largest_component_size = 0
+            num_components = 0
+            avg_drone_degree = 0
 
         metrics = {
             "time": self.time,
-            "num_active_drones": num_active_nodes,
-            "num_edges": num_edges,
-            "average_degree": avg_degree,
-            "is_connected": is_connected,
-            "largest_component_size": largest_cc_size,
-            "average_energy": avg_energy, # Add average energy to metrics
+            "num_active_drones": num_active_drones,
+            # "num_edges_total": num_edges, # Optionally report total edges including anchors
+            "num_edges_drones": drone_subgraph.number_of_edges(), # Edges between drones only
+            "average_degree_drones": avg_drone_degree, # Avg degree within drone subgraph
+            "is_swarm_connected": is_drone_swarm_connected, # Connectivity of drone swarm
+            "largest_component_size": largest_component_size, # Size relative to active drones
+            "num_components": num_components, # Number of separate drone groups
+            "average_energy": avg_energy,
             "avg_dist_from_center": avg_dist_from_center,
             "percent_in_corridor": percent_in_corridor
         }
@@ -296,74 +401,82 @@ class Environment:
         """Visualizes the current state of the simulation using Matplotlib."""
         self.ax.clear()
 
-        # --- Draw Corridor Boundaries --- 
-        # Calculate perpendicular vector to the corridor axis
-        perp_direction = np.array([-self.corridor_direction[1], self.corridor_direction[0]])
-        half_width_vec = perp_direction * (self.corridor_width / 2.0)
-        
-        # Points for the two boundary lines
-        line1_start = self.start_point + half_width_vec
-        line1_end = self.end_point + half_width_vec
-        line2_start = self.start_point - half_width_vec
-        line2_end = self.end_point - half_width_vec
-
-        # Draw the lines
-        self.ax.plot([line1_start[0], line1_end[0]], [line1_start[1], line1_end[1]], 'g--', alpha=0.5, label='Corridor Boundary')
-        self.ax.plot([line2_start[0], line2_end[0]], [line2_start[1], line2_end[1]], 'g--', alpha=0.5)
-        # --- End Corridor Drawing ---
-
-        # --- Draw Start/End Points --- 
-        self.ax.plot(self.start_point[0], self.start_point[1], 'go', markersize=10, label='Start')
-        self.ax.plot(self.end_point[0], self.end_point[1], 'ro', markersize=10, label='End')
-        # --- End Start/End Drawing ---
-
-        # Get positions for drawing
-        pos = nx.get_node_attributes(self.connectivity_graph, 'pos')
-        if not pos: # Exit if no nodes to draw
-            # Need to handle the plot closing gracefully if it's empty early on
-            # self.ax.set_title(f"Drone Swarm Simulation - Time: {self.time:.2f}s - No Active Drones")
-            # plt.draw()
-            # plt.pause(0.01)
-            return
-
-        # Determine node colors based on state (optional)
-        node_colors = []
-        active_nodes_in_graph = list(self.connectivity_graph.nodes())
-        for node_id in active_nodes_in_graph:
-             # Check if node_id exists in self.drones before accessing state
-            if node_id in self.drones:
-                drone_state = self.drones[node_id].state
-                if drone_state == "active":
-                    node_colors.append('blue')
-                elif drone_state == "low_power": # Example state
-                    node_colors.append('orange')
-                else: # inactive
-                    node_colors.append('grey')
-            else:
-                 # Should not happen if _update_connectivity is correct, but handle defensively
-                 node_colors.append('red') # Indicate an issue
-
-
-        # Draw the network
-        nx.draw_networkx_edges(self.connectivity_graph, pos, ax=self.ax, alpha=0.4, edge_color='gray')
-        # Ensure we only try to draw nodes that actually exist in the graph
-        nx.draw_networkx_nodes(self.connectivity_graph, pos, ax=self.ax, nodelist=active_nodes_in_graph, node_size=50, node_color=node_colors)
-        # nx.draw_networkx_labels(self.connectivity_graph, pos, ax=self.ax, font_size=8) # Optional: labels
-
-        # Set plot limits and aspect ratio
-        self.ax.set_xlim(0, self.size[0])
-        self.ax.set_ylim(0, self.size[1])
-        if len(self.size) == 3: # Basic handling for 3D Z-limit if needed
-             self.ax.set_zlim(0, self.size[2])
+        # Set plot limits slightly larger than environment size
+        margin = 5
+        self.ax.set_xlim(-margin, self.size[0] + margin)
+        self.ax.set_ylim(-margin, self.size[1] + margin)
         self.ax.set_aspect('equal', adjustable='box')
-        self.ax.set_title(f"Drone Swarm Simulation - Time: {self.time:.2f}s - Active: {len(active_nodes_in_graph)}")
-        self.ax.set_xlabel("X position")
-        self.ax.set_ylabel("Y position")
-        self.ax.legend(loc='upper right') # Add legend for start/end/boundary
+        self.ax.set_xlabel("X coordinate")
+        self.ax.set_ylabel("Y coordinate")
+        self.ax.set_title(f"Drone Swarm Simulation - Time: {self.time:.2f}s")
 
-        # Redraw the canvas
+        # --- Draw Corridor ---
+        # Draw centerline
+        self.ax.plot([self.start_point[0], self.end_point[0]],
+                     [self.start_point[1], self.end_point[1]], 'k--', alpha=0.5, label='Centerline')
+        # Draw boundaries (perpendicular lines)
+        perp_vec = np.array([-self.corridor_direction[1], self.corridor_direction[0]]) * (self.corridor_width / 2.0)
+        s1 = self.start_point + perp_vec
+        e1 = self.end_point + perp_vec
+        s2 = self.start_point - perp_vec
+        e2 = self.end_point - perp_vec
+        self.ax.plot([s1[0], e1[0]], [s1[1], e1[1]], 'k:', alpha=0.3)
+        self.ax.plot([s2[0], e2[0]], [s2[1], e2[1]], 'k:', alpha=0.3)
+        # Draw Start/End points distinctly
+        self.ax.plot(self.start_point[0], self.start_point[1], 'go', markersize=10, label='Start Point')
+        self.ax.plot(self.end_point[0], self.end_point[1], 'ro', markersize=10, label='End Point')
+        # --- End Corridor ---
+
+        # --- Draw Drones and Connectivity ---
+        node_positions = nx.get_node_attributes(self.connectivity_graph, 'pos')
+        node_types = nx.get_node_attributes(self.connectivity_graph, 'type')
+        drone_nodes = [n for n, d in self.drones.items() if d.state == 'active']
+        inactive_drone_nodes = [n for n, d in self.drones.items() if d.state != 'active']
+        anchor_nodes = [START_NODE_ID, END_NODE_ID]
+
+        # Draw active drones
+        active_pos = {n: node_positions[n] for n in drone_nodes if n in node_positions}
+        if active_pos:
+            nx.draw_networkx_nodes(self.connectivity_graph, pos=active_pos,
+                                   nodelist=active_pos.keys(), node_color='blue', node_size=50, ax=self.ax, label='Active Drone')
+
+        # Draw inactive drones
+        inactive_pos = {n: self.drones[n].position for n in inactive_drone_nodes} # Get current pos even if not in graph
+        if inactive_pos:
+             pos_array = np.array(list(inactive_pos.values()))
+             self.ax.scatter(pos_array[:, 0], pos_array[:, 1], color='gray', s=30, alpha=0.5, label='Inactive Drone')
+
+        # Draw anchor points (using positions stored in graph)
+        anchor_pos = {n: node_positions[n] for n in anchor_nodes if n in node_positions}
+        # Colors defined earlier work better than node_color here
+        # nx.draw_networkx_nodes(self.connectivity_graph, pos=anchor_pos,
+        #                        nodelist=anchor_nodes, node_color=['green', 'red'], node_size=100, ax=self.ax, node_shape='s')
+
+        # Draw edges (connectivity)
+        nx.draw_networkx_edges(self.connectivity_graph, pos=node_positions,
+                               edge_color='gray', alpha=0.5, ax=self.ax)
+
+        # --- Add Legend (Combine handles manually) ---
+        handles, labels = self.ax.get_legend_handles_labels()
+        # Add custom handles if needed (e.g., if scatter wasn't labeled)
+        from matplotlib.lines import Line2D
+        custom_handles = [Line2D([0], [0], marker='o', color='w', label='Active Drone', markersize=7, markerfacecolor='blue'),
+                          Line2D([0], [0], marker='o', color='w', label='Inactive Drone', markersize=7, markerfacecolor='gray', alpha=0.5)]
+                         # Line2D([0], [0], marker='s', color='w', label='Start/End', markersize=10, markerfacecolor='green')] # Less reliable color mapping
+
+        # Filter handles based on what was actually plotted
+        unique_labels = {}
+        final_handles = []
+        for handle, label in zip(handles + custom_handles, labels + [h.get_label() for h in custom_handles]):
+             if label not in unique_labels:
+                 unique_labels[label] = handle
+                 final_handles.append(handle)
+
+        self.ax.legend(handles=final_handles, loc='upper right', fontsize='small')
+        # --- End Legend ---
+
         plt.draw()
-        plt.pause(0.01) # Small pause to allow plot to update
+        plt.pause(0.001) # Small pause to allow plot to update
 
     def close_visualization(self):
         """Closes the visualization window."""
