@@ -9,7 +9,13 @@ END_NODE_ID = 'end_node'
 
 class Environment:
     """Manages the simulation space, drones, and connectivity."""
-    def __init__(self, size, num_drones, comm_range, initial_energy, move_energy_cost, idle_energy_cost, start_point, end_point, corridor_width):
+    def __init__(self, size, num_drones, comm_range, initial_energy, move_energy_cost, idle_energy_cost, start_point, end_point, corridor_width,
+                 # New parameters for corridor boids
+                 anchor_range=20.0, min_neighbors=2,
+                 weight_separation=1.5, weight_alignment=1.0, weight_cohesion=1.0,
+                 weight_corridor=1.0, weight_anchor=1.5, weight_connectivity=2.0, max_speed=5.0,
+                 separation_distance=10.0, weight_goal=1.0,
+                 weight_start_anchor=0.6):
         self.size = np.array(size)  # e.g., [width, height] or [width, height, depth]
         self.num_drones = num_drones
         self.comm_range = comm_range
@@ -25,11 +31,38 @@ class Environment:
         self.end_point = np.array(end_point, dtype=float)
         self.corridor_width = float(corridor_width)
         self.corridor_axis = self.end_point - self.start_point
-        self.corridor_length_sq = np.dot(self.corridor_axis, self.corridor_axis)
+        self.corridor_length = np.linalg.norm(self.corridor_axis)
+        self.corridor_length_sq = self.corridor_length * self.corridor_length
         # Ensure corridor axis is not zero vector to avoid division by zero
         if self.corridor_length_sq < 1e-9:
              raise ValueError("Start and End points are too close.")
-        self.corridor_direction = self.corridor_axis / np.sqrt(self.corridor_length_sq)
+        self.corridor_direction = self.corridor_axis / self.corridor_length
+
+        # Boids Parameters
+        self.max_speed = max_speed
+        self.separation_distance = separation_distance
+        # Ensure SEPARATION_DISTANCE < self.comm_range
+        if self.separation_distance >= self.comm_range:
+             print(f"Warning: SEPARATION_DISTANCE ({self.separation_distance}) should be less than COMM_RANGE ({self.comm_range})")
+             self.separation_distance = self.comm_range * 0.8 # Adjust to be clearly smaller
+             print(f"Adjusted SEPARATION_DISTANCE to {self.separation_distance}")
+
+        # Weights for steering behaviors
+        self.weight_separation = weight_separation
+        self.weight_alignment = weight_alignment
+        self.weight_cohesion = weight_cohesion
+        self.weight_corridor = weight_corridor
+        self.weight_anchor = weight_anchor
+        self.weight_start_anchor = weight_start_anchor
+        self.weight_connectivity = weight_connectivity
+        self.weight_goal = weight_goal
+
+        # New Rule Parameters
+        self.anchor_range = anchor_range # Distance from start/end to apply anchor force
+        self.min_neighbors = min_neighbors # Min neighbors before connectivity rescue kicks in
+
+        # State flag for established corridor
+        self.corridor_established = False
 
         # Add start/end points as nodes to the graph
         self.connectivity_graph.add_node(START_NODE_ID, pos=self.start_point, type='anchor')
@@ -44,7 +77,7 @@ class Environment:
         self._update_connectivity()
 
     def _initialize_drones(self):
-        """Creates and places drones randomly within the environment bounds."""
+        """Each drone is initialized near the start_point with a small random offset, ensuring they stay within the environment boundaries."""
         print(f"Initializing {self.num_drones} drones near Start Point: {self.start_point}")
         # Define a small area around the start point for initial placement
         initial_spread = 5.0 # Drones will start within +/- 2.5 units of the start point
@@ -153,32 +186,35 @@ class Environment:
         # 5. Calculate metrics
         metrics = self._calculate_metrics()
 
+        # Update corridor established flag based on END node connections
+        end_connections = metrics.get('end_node_drone_neighbors', 0)
+        self.corridor_established = end_connections >= 3
+
+        if self.corridor_established:
+            # Optional: Print only once when established
+            if not hasattr(self, '_corridor_print_done') or not self._corridor_print_done:
+                 print(f"Time {self.time:.2f}: Corridor established! Drones holding position.")
+                 self._corridor_print_done = True
+        else:
+             self._corridor_print_done = False # Reset if connection lost
+
         # 6. Check termination conditions (placeholder)
         done = self._check_termination()
 
         return metrics, done
 
     def _get_actions(self):
-        """Calculates drone actions (velocity) using Boids/Flocking rules for corridor formation."""
+        """Calculates drone actions (velocity) using enhanced Boids rules for corridor formation."""
         actions = {}
 
-        # --- Boids Parameters ---
-        MAX_SPEED = 5.0           # Max speed a drone can travel per second
-        SEPARATION_DISTANCE = 10.0  # Minimum desired distance between drones
-        # Ensure SEPARATION_DISTANCE < self.comm_range
-        if SEPARATION_DISTANCE >= self.comm_range:
-             print(f"Warning: SEPARATION_DISTANCE ({SEPARATION_DISTANCE}) should be less than COMM_RANGE ({self.comm_range})")
-             # Adjust if necessary, ensure it's significantly smaller than comm_range
-             SEPARATION_DISTANCE = self.comm_range * 0.5 
-             print(f"Adjusted SEPARATION_DISTANCE to {SEPARATION_DISTANCE}")
-
-
-        # Weights for steering behaviors (PLACEHOLDERS - need tuning)
-        WEIGHT_SEPARATION = 1.5  # Slightly reduced
-        WEIGHT_COHESION = 0.2    # Significantly reduced
-        WEIGHT_CORRIDOR = 1.2    # Kept same
-        WEIGHT_ALIGNMENT = 1.5   # Increased
-        # --- End Boids Parameters ---
+        # Check if corridor is established - if so, all drones hold position
+        if self.corridor_established:
+            for drone_id in self.drones:
+                 # Check if drone_id exists and get its position dimension
+                 if drone_id in self.drones:
+                     actions[drone_id] = np.zeros_like(self.drones[drone_id].position)
+                 # Else: If somehow a drone_id isn't in self.drones, skip (shouldn't happen)
+            return actions
 
         active_drones = {id: d for id, d in self.drones.items() if d.state == 'active'}
         active_drone_ids = list(active_drones.keys())
@@ -187,115 +223,188 @@ class Environment:
         if num_active == 0:
             return actions # No active drones
 
-        # Pre-calculate positions for efficiency
+        # Pre-calculate positions and velocities for efficiency
         positions = {id: d.position for id, d in active_drones.items()}
+        # Assuming drones have a 'velocity' attribute. If not, we need to add it or estimate it.
+        # Let's add a placeholder velocity if it doesn't exist
+        velocities = {id: getattr(d, 'velocity', np.zeros_like(d.position)) for id, d in active_drones.items()}
+
 
         for drone_id in active_drone_ids:
             current_drone = active_drones[drone_id]
             pos = positions[drone_id]
+            vel = velocities[drone_id] # Current velocity for alignment calculation
 
+            # Initialize steering vectors
             separation_vector = np.zeros_like(pos)
-            cohesion_vector = np.zeros_like(pos)
-            corridor_vector = np.zeros_like(pos)
-            alignment_vector = np.zeros_like(pos) # NEW: Initialize alignment vector
-            
-            neighbor_positions_for_cohesion = []
-            num_separation_neighbors = 0
+            alignment_vector = np.zeros_like(pos) # Will store average neighbor velocity
+            cohesion_vector = np.zeros_like(pos) # Will store vector to center of mass
+            corridor_vector = np.zeros_like(pos) # Steers towards corridor centerline
+            anchor_vector = np.zeros_like(pos)   # Steers towards Start/End base
+            connectivity_vector = np.zeros_like(pos) # Steers towards nearest neighbor if isolated
+            goal_vector = np.zeros_like(pos) # NEW: Steers towards the end point along the corridor
 
-            # --- Calculate Steering Vectors ---
+            neighbor_positions = []
+            neighbor_velocities = []
+            neighbor_distances = {} # Store distances for finding nearest neighbor {other_id: dist}
+            num_neighbors = 0
+            nearest_neighbor_id = -1
+            min_dist_sq = float('inf')
+
+            # --- Find Neighbors and Calculate Separation/Cohesion/Alignment ---
             for other_id in active_drone_ids:
                 if drone_id == other_id:
                     continue
 
                 other_pos = positions[other_id]
+                other_vel = velocities[other_id]
                 vec_to_other = other_pos - pos
                 dist_sq = np.dot(vec_to_other, vec_to_other)
-                dist = np.sqrt(dist_sq) if dist_sq > 1e-9 else 0 # Avoid sqrt(0)
 
-                # 1. Separation
-                if dist > 1e-9 and dist < SEPARATION_DISTANCE:
-                    # Force is stronger when closer, pointing away from the neighbor
-                    separation_vector -= (vec_to_other / dist) * (1.0 - dist / SEPARATION_DISTANCE)
-                    num_separation_neighbors += 1
-
-                # 2. Cohesion (Neighbors within comm_range but outside separation distance)
-                elif dist > 1e-9 and dist < self.comm_range:
-                     neighbor_positions_for_cohesion.append(other_pos)
-
-            # Average Separation Vector (Optional: can prevent extreme forces in dense clusters)
-            # if num_separation_neighbors > 0:
-            #     separation_vector /= num_separation_neighbors
+                # Check if within communication range (for cohesion, alignment, connectivity)
+                if dist_sq < self.comm_range**2:
+                    dist = np.sqrt(dist_sq) if dist_sq > 1e-9 else 1e-9 # Avoid division by zero
+                    num_neighbors += 1
+                    neighbor_positions.append(other_pos)
+                    neighbor_velocities.append(other_vel)
+                    neighbor_distances[other_id] = dist
+                    if dist_sq < min_dist_sq:
+                        min_dist_sq = dist_sq
+                        nearest_neighbor_id = other_id
 
 
-            # 2. Cohesion Calculation (if neighbors exist)
-            if neighbor_positions_for_cohesion:
-                center_of_mass = np.mean(neighbor_positions_for_cohesion, axis=0)
+                    # 1. Separation (within separation distance)
+                    if dist < self.separation_distance:
+                        # Force is stronger when closer, pointing away from the neighbor
+                        separation_vector -= (vec_to_other / dist) * (1.0 - dist / self.separation_distance)
+
+
+            # --- Finalize Cohesion and Alignment (if neighbors exist) ---
+            if num_neighbors > 0:
+                # 2. Cohesion: Steer towards the center of mass of neighbors
+                center_of_mass = np.mean(neighbor_positions, axis=0)
                 vec_to_center = center_of_mass - pos
-                # Steer towards the center of mass - scale by distance? Or keep simple?
-                # For now, use the raw vector towards the center. Normalizing might be needed during tuning.
-                cohesion_vector = vec_to_center
-                # Optional: Cap cohesion force magnitude if needed
+                # Limit the desired velocity from cohesion to max_speed
+                desired_cohesion_vel = (vec_to_center / np.linalg.norm(vec_to_center)) * self.max_speed if np.linalg.norm(vec_to_center) > 1e-9 else np.zeros_like(pos)
+                cohesion_vector = self._limit_force(desired_cohesion_vel - vel) # Calculate steering force and limit it
 
+                # 3. Alignment: Steer towards the average heading of neighbors
+                average_velocity = np.mean(neighbor_velocities, axis=0)
+                # Limit the desired velocity from alignment to max_speed
+                desired_alignment_vel = (average_velocity / np.linalg.norm(average_velocity)) * self.max_speed if np.linalg.norm(average_velocity) > 1e-9 else np.zeros_like(pos)
+                alignment_vector = self._limit_force(desired_alignment_vel - vel) # Calculate steering force and limit it
 
-            # 3. Corridor Following
-            # Vector from the start point of the corridor line to the drone
+            # --- Calculate Corridor Following ---
+            # (Existing logic seems reasonable, keep it, but calculate steering force)
             drone_vec_from_start = pos - self.start_point
-            # Project this vector onto the corridor axis vector to find the projection length
-            # Note: self.corridor_axis is end_point - start_point
-            # Note: self.corridor_length_sq is dot(self.corridor_axis, self.corridor_axis)
             projection_scalar_ratio = np.dot(drone_vec_from_start, self.corridor_axis) / self.corridor_length_sq
-            
-            # Find the closest point ON THE INFINITE LINE defined by start/end
             closest_center_pt_on_line = self.start_point + projection_scalar_ratio * self.corridor_axis
-            
-            # Vector from the closest point on the line to the drone
             perp_vec_to_drone = pos - closest_center_pt_on_line
             dist_to_centerline = np.linalg.norm(perp_vec_to_drone)
 
             # Apply force only if outside the desired corridor width
             if dist_to_centerline > self.corridor_width / 2.0:
-                # Vector pointing back towards the centerline (opposite of perp_vec_to_drone)
-                # Normalize to get direction only
-                direction_to_center = -perp_vec_to_drone / dist_to_centerline
-                
-                # Scale force maybe? For now, use constant magnitude push towards line.
-                # magnitude = (dist_to_centerline - self.corridor_width / 2.0) # Linear scaling factor
-                magnitude = 1.0 # Constant force magnitude
-                corridor_vector = direction_to_center * magnitude
-
-            # 4. Alignment / Forward Thrust (NEW)
-            # Simplest form: always try to move along the corridor direction
-            alignment_vector = self.corridor_direction
+                direction_to_center = -perp_vec_to_drone / dist_to_centerline if dist_to_centerline > 1e-9 else np.zeros_like(pos)
+                # Desired velocity is purely to correct position, scaled by max_speed?
+                desired_corridor_vel = direction_to_center * self.max_speed
+                # The force should ideally only act perpendicularly to the current velocity?
+                # For now, use standard steering force calculation.
+                corridor_vector = self._limit_force(desired_corridor_vel - vel) # Calculate steering force and limit it
 
 
-            # --- Combine Steering Vectors ---
-            # Weight the vectors - Tuning these weights is crucial!
-            desired_velocity = (separation_vector * WEIGHT_SEPARATION +
-                                cohesion_vector * WEIGHT_COHESION +
-                                corridor_vector * WEIGHT_CORRIDOR +
-                                alignment_vector * WEIGHT_ALIGNMENT) # Add alignment
+            # --- Calculate Base Anchoring ---
+            # Project drone's position onto the corridor axis
+            projected_dist_from_start = np.dot(drone_vec_from_start, self.corridor_direction)
+
+            if 0 <= projected_dist_from_start < self.anchor_range:
+                # Near Start: pull towards Start base
+                vec_to_start = self.start_point - pos
+                desired_anchor_vel = (vec_to_start / np.linalg.norm(vec_to_start)) * self.max_speed if np.linalg.norm(vec_to_start) > 1e-9 else np.zeros_like(pos)
+                anchor_vector = self._limit_force(desired_anchor_vel - vel)
+                # Apply START anchor weight here
+                anchor_vector *= self.weight_start_anchor
+            elif self.corridor_length - self.anchor_range < projected_dist_from_start <= self.corridor_length + 1e-9: # Allow slight overshoot
+                 # Near End: pull towards End base
+                vec_to_end = self.end_point - pos
+                desired_anchor_vel = (vec_to_end / np.linalg.norm(vec_to_end)) * self.max_speed if np.linalg.norm(vec_to_end) > 1e-9 else np.zeros_like(pos)
+                anchor_vector = self._limit_force(desired_anchor_vel - vel)
+                # Apply END anchor weight here (using the general self.weight_anchor)
+                anchor_vector *= self.weight_anchor
+            else:
+                 # If not near start or end, anchor_vector remains zero (or we apply zero weight)
+                 # Multiplying by zero weight below handles this implicitly if vector wasn't zero
+                 # To be explicit:
+                 anchor_vector = np.zeros_like(pos)
 
 
-            # --- Normalize and Cap Speed ---
-            speed = np.linalg.norm(desired_velocity)
-            if speed > MAX_SPEED:
-                desired_velocity = (desired_velocity / speed) * MAX_SPEED
-            elif speed < 1e-6: # Handle potential zero vector if no forces act on drone
-                # Default behavior: maybe a tiny random nudge or push towards end?
-                # Or just stay put if truly balanced. Let's default to zero for now.
-                desired_velocity = np.zeros_like(pos)
-                # Alternative: Add a small default forward thrust along corridor direction
-                # desired_velocity = self.corridor_direction * MAX_SPEED * 0.1
+            # --- Calculate Connectivity Rescue ---
+            if num_neighbors < self.min_neighbors and nearest_neighbor_id != -1:
+                 # Not enough neighbors, pull towards the nearest one found
+                 nearest_neighbor_pos = positions[nearest_neighbor_id]
+                 vec_to_nearest = nearest_neighbor_pos - pos
+                 desired_rescue_vel = (vec_to_nearest / np.linalg.norm(vec_to_nearest)) * self.max_speed if np.linalg.norm(vec_to_nearest) > 1e-9 else np.zeros_like(pos)
+                 connectivity_vector = self._limit_force(desired_rescue_vel - vel)
 
-            actions[drone_id] = desired_velocity
+            # 7. Goal Steering (NEW)
+            # Always apply a force gently pushing towards the End Point along the corridor axis
+            desired_goal_vel = self.corridor_direction * self.max_speed
+            goal_vector = self._limit_force(desired_goal_vel - vel)
+
+
+            # --- Combine Steering Forces with Weights --- Apply weights to the limited forces
+            # Note: Separation is calculated differently (as direct force), maybe limit it too?
+            # Let's limit separation force similarly for consistency.
+            limited_separation_vector = self._limit_force(separation_vector) # Limit the raw separation force
+
+            total_force = (limited_separation_vector * self.weight_separation +
+                           alignment_vector * self.weight_alignment +
+                           cohesion_vector * self.weight_cohesion +
+                           corridor_vector * self.weight_corridor +
+                           anchor_vector + # Anchor vector is now pre-weighted
+                           connectivity_vector * self.weight_connectivity +
+                           goal_vector * self.weight_goal)
+
+            # --- Apply Force to Calculate Acceleration and New Velocity ---
+            # Acceleration = Force / Mass (Assume mass = 1 for simplicity)
+            acceleration = total_force
+            new_velocity = vel + acceleration * 1.0 # dt is applied in move(), assume dt=1 for velocity calc step?
+                                                      # Or maybe the force calculation inherently includes dt? Let's stick to vel + accel for now.
+
+            # --- Cap Final Speed ---
+            speed = np.linalg.norm(new_velocity)
+            if speed > self.max_speed:
+                new_velocity = (new_velocity / speed) * self.max_speed
+            elif speed < 1e-9:
+                 # If no force caused movement, maybe maintain velocity? Or decay?
+                 # For now, let it be zero if calculation results in zero.
+                 new_velocity = np.zeros_like(pos)
+
+
+            # Store the calculated *final* velocity as the action
+            actions[drone_id] = new_velocity
+
+            # Update drone's internal velocity state for next step's calculations
+            current_drone.velocity = new_velocity # Assign the calculated velocity back
+
 
         # Assign zero velocity to inactive drones explicitly
         for drone_id, drone in self.drones.items():
             if drone.state != 'active':
                  # Ensure inactive drones have a zero velocity action
-                 actions[drone_id] = np.zeros_like(drone.position) 
+                 actions[drone_id] = np.zeros_like(drone.position)
 
         return actions
+
+    # Helper function to compute steering force (limit magnitude)
+    # Renamed from _steer_towards to _limit_force
+    def _limit_force(self, force, max_force=0.4):
+        # Limits the magnitude of a steering force vector
+        # Reduced max_force default from 1.0 to 0.4 to dampen oscillations
+        # max_force can be tuned, perhaps relate it to max_speed or acceleration limit
+        norm = np.linalg.norm(force)
+        if norm > max_force:
+            force = (force / norm) * max_force
+        return force
 
     def _calculate_metrics(self):
         """Calculates and returns relevant simulation metrics."""
@@ -369,6 +478,19 @@ class Environment:
             num_components = 0
             avg_drone_degree = 0
 
+        # --- Check Start-to-End Connectivity ---
+        start_to_end_connected = False
+        if START_NODE_ID in self.connectivity_graph and END_NODE_ID in self.connectivity_graph:
+            start_to_end_connected = nx.has_path(self.connectivity_graph, START_NODE_ID, END_NODE_ID)
+
+        # --- Count End Node Drone Neighbors ---
+        end_node_drone_neighbors = 0
+        if END_NODE_ID in self.connectivity_graph:
+            for neighbor_id in self.connectivity_graph.neighbors(END_NODE_ID):
+                # Check if the neighbor is a drone (not another anchor or non-existent node)
+                if neighbor_id in active_drone_nodes_in_graph: # Check against drones currently in graph
+                    end_node_drone_neighbors += 1
+
         metrics = {
             "time": self.time,
             "num_active_drones": num_active_drones,
@@ -380,7 +502,9 @@ class Environment:
             "num_components": num_components, # Number of separate drone groups
             "average_energy": avg_energy,
             "avg_dist_from_center": avg_dist_from_center,
-            "percent_in_corridor": percent_in_corridor
+            "percent_in_corridor": percent_in_corridor,
+            "start_to_end_connected": start_to_end_connected, # Add the new metric
+            "end_node_drone_neighbors": end_node_drone_neighbors # Add count of drones connected to End node
         }
         # print(f"Metrics: {metrics}") # Reduce print frequency
         return metrics
@@ -388,7 +512,7 @@ class Environment:
     def _check_termination(self):
         """Checks if the simulation should terminate."""
         # Example: Terminate if time limit reached or all drones inactive
-        if self.time >= 10.0: # Arbitrary time limit for now
+        if self.time >= 100.0: # Arbitrary time limit for now
             # print("Termination condition met: Time limit reached.")
             return True
         # Check if there are any active drones left in the dictionary

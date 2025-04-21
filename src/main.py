@@ -15,18 +15,37 @@ IDLE_ENERGY_COST_PER_SECOND = 0.1 # Energy cost per second while idle/active
 # --- Corridor Parameters ---
 START_POINT = [10.0, 50.0]
 END_POINT = [90.0, 50.0]
-CORRIDOR_WIDTH = 20.0 # Desired width of the drone corridor
+CORRIDOR_WIDTH = 30.0 # Increased width
 
 TIME_STEP = 0.1 # Simulation time step in seconds
 MAX_SIM_TIME = 50.0 # Increased simulation time to see energy effects
 RENDER_EVERY_STEP = True # Control rendering frequency
+
+# --- Boid Parameters (passed to Environment) ---
+# These can be tuned
+MAX_SPEED = 5.0
+SEPARATION_DISTANCE = 15.0 # Increased separation distance
+ANCHOR_RANGE = 25.0 # Keep anchor range for now
+MIN_NEIGHBORS = 2 # Min neighbors before rescue force applies
+
+# Weights for steering behaviors - Adjusted based on simulation results
+MAX_FORCE_LIMIT = 0.5 # New parameter to limit individual steering forces (passed to environment? No, used in _limit_force default)
+# Tuned further based on results (clustering at end)
+WEIGHT_SEPARATION = 1.9 # Keep separation strong
+WEIGHT_ALIGNMENT = 0.6 # Slightly increase alignment
+WEIGHT_COHESION = 0.1 # Reduce cohesion even further
+WEIGHT_CORRIDOR = 1.6 # Increase corridor following again to keep drones inside
+WEIGHT_ANCHOR = 0.2 # Reduce anchor force further
+WEIGHT_START_ANCHOR = 0.6 # Separate, stronger anchor force for START node
+WEIGHT_CONNECTIVITY = 2.0 # Keep connectivity rescue
+WEIGHT_GOAL = 0.8 # Reduce goal steering slightly
 
 # --- Main Simulation Logic ---
 def run_simulation():
     """Initializes and runs the drone swarm simulation."""
     print("Starting Drone Swarm Simulation...")
 
-    # 1. Initialize the environment, passing energy costs and corridor params
+    # 1. Initialize the environment, passing all parameters
     env = Environment(size=SIMULATION_AREA_SIZE,
                       num_drones=NUM_DRONES,
                       comm_range=COMM_RANGE,
@@ -35,7 +54,20 @@ def run_simulation():
                       idle_energy_cost=(IDLE_ENERGY_COST_PER_SECOND * TIME_STEP), # Pass cost per step
                       start_point=START_POINT,
                       end_point=END_POINT,
-                      corridor_width=CORRIDOR_WIDTH)
+                      corridor_width=CORRIDOR_WIDTH,
+                      # Pass Boid parameters
+                      anchor_range=ANCHOR_RANGE,
+                      min_neighbors=MIN_NEIGHBORS,
+                      weight_separation=WEIGHT_SEPARATION,
+                      weight_alignment=WEIGHT_ALIGNMENT,
+                      weight_cohesion=WEIGHT_COHESION,
+                      weight_corridor=WEIGHT_CORRIDOR,
+                      weight_anchor=WEIGHT_ANCHOR,
+                      weight_connectivity=WEIGHT_CONNECTIVITY,
+                      max_speed=MAX_SPEED,
+                      separation_distance=SEPARATION_DISTANCE,
+                      weight_goal=WEIGHT_GOAL,
+                      weight_start_anchor=WEIGHT_START_ANCHOR) # Pass start anchor weight
 
     # Initial state rendering
     if RENDER_EVERY_STEP:
